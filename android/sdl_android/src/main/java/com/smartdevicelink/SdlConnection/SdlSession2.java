@@ -32,6 +32,7 @@
 
 package com.smartdevicelink.SdlConnection;
 
+import android.content.Context;
 import android.util.Log;
 
 import com.smartdevicelink.exception.SdlException;
@@ -44,9 +45,12 @@ import com.smartdevicelink.protocol.heartbeat.IHeartbeatMonitor;
 import com.smartdevicelink.proxy.interfaces.ISdlServiceListener;
 import com.smartdevicelink.transport.BaseTransportConfig;
 import com.smartdevicelink.transport.MultiplexTransportConfig;
+import com.smartdevicelink.transport.TCPTransportConfig;
 import com.smartdevicelink.transport.enums.TransportType;
+import com.smartdevicelink.util.MediaStreamingStatus;
 import com.smartdevicelink.util.Version;
 
+import java.lang.ref.WeakReference;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -57,6 +61,9 @@ public class SdlSession2 extends SdlSession implements ISdlProtocol{
 
 
     final protected SdlProtocol sdlProtocol;
+    WeakReference<Context> contextWeakReference;
+    MediaStreamingStatus mediaStreamingStatus;
+    boolean requiresAudioSupport = false;
 
     @SuppressWarnings("SameReturnValue")
     @Deprecated
@@ -66,8 +73,35 @@ public class SdlSession2 extends SdlSession implements ISdlProtocol{
 
     public SdlSession2(ISdlConnectionListener listener, MultiplexTransportConfig config){
         this.transportConfig = config;
+        if(config != null){
+            contextWeakReference = new WeakReference<>(config.getContext());
+            this.requiresAudioSupport = Boolean.TRUE.equals(config.requiresAudioSupport()); //handle null case
+
+        }
         this.sessionListener = listener;
         this.sdlProtocol = new SdlProtocol(this,config);
+
+    }
+
+    public SdlSession2(ISdlConnectionListener listener, TCPTransportConfig config){ //TODO is it better to have two constructors or make it take BaseTransportConfig?
+        this.transportConfig = config;
+        this.sessionListener = listener;
+        this.sdlProtocol = new SdlProtocol(this,config);
+    }
+
+    boolean isAudioRequirementMet(){
+        if(mediaStreamingStatus == null && contextWeakReference!= null && contextWeakReference.get() != null){
+            mediaStreamingStatus = new MediaStreamingStatus(contextWeakReference.get(), new MediaStreamingStatus.Callback() {
+                @Override
+                public void onAudioNoLongerAvailable() {
+                    close();
+                    shutdown("Audio output no longer available");
+                }
+            });
+        }
+
+        // If requiresAudioSupport is false, or a supported audio output device is available
+        return !requiresAudioSupport || mediaStreamingStatus.isAudioOutputAvailable();
 
     }
 
@@ -144,6 +178,11 @@ public class SdlSession2 extends SdlSession implements ISdlProtocol{
     @SuppressWarnings("RedundantThrows")
     @Override
     public void startSession() throws SdlException {
+        if(!isAudioRequirementMet()){
+            shutdown("Audio output not available");
+            return;
+        }
+
         sdlProtocol.start();
     }
 
@@ -169,6 +208,9 @@ public class SdlSession2 extends SdlSession implements ISdlProtocol{
 
     public void shutdown(String info){
         Log.d(TAG, "Shutdown - " + info);
+        if(mediaStreamingStatus != null) {
+            mediaStreamingStatus.clear();
+        }
         this.sessionListener.onTransportDisconnected(info);
 
     }
